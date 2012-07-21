@@ -1,5 +1,4 @@
-/* arch/arm/mach-msm/acpuclock.c
- *
+/*
  * MSM architecture clock driver
  *
  * Copyright (C) 2007 Google, Inc.
@@ -125,6 +124,7 @@ static struct clock_state drv_state = { 0 };
 static struct clkctl_acpu_speed *acpu_freq_tbl;
 
 static void __init acpuclk_init(void);
+unsigned int acpuclk_max_rate;
 
 /*
  * ACPU freq tables used for different PLLs frequency combinations. The
@@ -319,6 +319,35 @@ static struct clkctl_acpu_speed pll0_960_pll1_245_pll2_1200_pll4_1008[] = {
 	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0}, {0, 0, 0, 0} }
 };
 
+/* 7x27aa pll4 at 1008mhz with CDMA capable modem */
+static struct clkctl_acpu_speed pll0_960_pll1_196_pll2_1200_pll4_1008[] = {
+	{ 0, 19200, ACPU_PLL_TCXO, 0, 0, 2400, 3, 0, 24576 },
+	{ 0, 65536, ACPU_PLL_1, 1, 3,  8192, 3, 1, 49152 },
+	{ 1, 98304, ACPU_PLL_1, 1, 1,  12288, 3, 2, 49152 },
+	{ 1, 196608, ACPU_PLL_1, 1, 0, 24576, 3, 3, 98304 },
+	{ 0, 300000, ACPU_PLL_2, 2, 3, 37500, 3, 4, 150000 },
+	{ 1, 320000, ACPU_PLL_0, 4, 2, 40000, 3, 4, 122880 },
+	{ 1, 480000, ACPU_PLL_0, 4, 1, 60000, 3, 5, 122880 },
+	{ 0, 504000, ACPU_PLL_4, 6, 1, 63000, 3, 6, 200000 },
+	{ 1, 600000, ACPU_PLL_2, 2, 1, 75000, 3, 6, 200000 },
+	{ 1, 1008000, ACPU_PLL_4, 6, 0, 126000, 3, 7, 200000},
+	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0}, {0, 0, 0, 0} }
+};
+
+/* 7x25a pll2 at 1200mhz with GSM capable modem */
+static struct clkctl_acpu_speed pll0_960_pll1_245_pll2_1200_pll4_800_25a[] = {
+	{ 0, 19200, ACPU_PLL_TCXO, 0, 0, 2400, 3, 0, 30720 },
+	{ 0, 61440, ACPU_PLL_1, 1, 3,  7680, 3, 1,  61440 },
+	{ 1, 122880, ACPU_PLL_1, 1, 1,  15360, 3, 2,  61440 },
+	{ 1, 245760, ACPU_PLL_1, 1, 0, 30720, 3, 3,  61440 },
+	{ 0, 300000, ACPU_PLL_2, 2, 3, 37500, 3, 4, 150000 },
+	{ 1, 320000, ACPU_PLL_0, 4, 2, 40000, 3, 4, 122880 },
+	{ 0, 400000, ACPU_PLL_4, 6, 1, 50000, 3, 4, 122880 },
+	{ 1, 480000, ACPU_PLL_0, 4, 1, 60000, 3, 5, 122880 },
+	{ 1, 600000, ACPU_PLL_2, 2, 1, 75000, 3, 6, 200000 },
+	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0}, {0, 0, 0, 0} }
+};
+
 #define PLL_0_MHZ	0
 #define PLL_196_MHZ	10
 #define PLL_245_MHZ	12
@@ -326,7 +355,7 @@ static struct clkctl_acpu_speed pll0_960_pll1_245_pll2_1200_pll4_1008[] = {
 #define PLL_768_MHZ	40
 #define PLL_800_MHZ	41
 #define PLL_960_MHZ	50
-#define PLL_1008_MHZ    52
+#define PLL_1008_MHZ	52
 #define PLL_1056_MHZ	55
 #define PLL_1200_MHZ	62
 
@@ -357,6 +386,7 @@ static struct pll_freq_tbl_map acpu_freq_tbl_list[] = {
 	PLL_CONFIG(960, 245, 1200, 800),
 	PLL_CONFIG(960, 196, 1200, 800),
 	PLL_CONFIG(960, 245, 1200, 1008),
+	PLL_CONFIG(960, 196, 1200, 1008),
 	{ 0, 0, 0, 0, 0 }
 };
 
@@ -555,6 +585,9 @@ int acpuclk_set_rate(int cpu, unsigned long rate, enum setrate_reason reason)
 	struct clkctl_acpu_speed *cur_s, *tgt_s, *strt_s;
 	int res, rc = 0;
 	unsigned int plls_enabled = 0, pll;
+
+	if (acpuclk_max_rate < rate)
+		acpuclk_max_rate = rate;
 
 	if (reason == SETRATE_CPUFREQ)
 		mutex_lock(&drv_state.lock);
@@ -861,13 +894,21 @@ static void __init acpu_freq_tbl_fixup(void)
 		pll0_needs_fixup = 1;
 	}
 
-	/* Select the right table to use. */
-	for (lst = acpu_freq_tbl_list; lst->tbl != 0; lst++) {
-		if (lst->pll0_l == pll0_l && lst->pll1_l == pll1_l
-				&& lst->pll2_l == pll2_l
-				&& lst->pll4_l == pll4_l) {
-			acpu_freq_tbl = lst->tbl;
-			break;
+	/* Fix the tables for 7x25a variant to not conflict with 7x27 ones */
+	if (cpu_is_msm7x25a()) {
+		if (pll1_l == PLL_245_MHZ) {
+			acpu_freq_tbl =
+				pll0_960_pll1_245_pll2_1200_pll4_800_25a;
+		}
+	} else {
+		/* Select the right table to use. */
+		for (lst = acpu_freq_tbl_list; lst->tbl != 0; lst++) {
+			if (lst->pll0_l == pll0_l && lst->pll1_l == pll1_l
+					&& lst->pll2_l == pll2_l
+					&& lst->pll4_l == pll4_l) {
+				acpu_freq_tbl = lst->tbl;
+				break;
+			}
 		}
 	}
 
